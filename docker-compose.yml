@@ -1,0 +1,201 @@
+# My homelab-media-docker-stack
+#
+# Services
+#   Traefik     - Proxy server
+#   Heimdall    - Dashboard
+#   Plex        - Media player
+#   Tautulli    - Plex statistics
+#   Ombi        - Allows users to request shows/movies to add to Plex/Sonarr/Radarr
+#   Sonarr      - Searches for TV shows to download
+#   Radarr      - Searches for movies to download
+#   NZBget      - Usenet downloader
+#   NZBHydra    - Usenet indexer consolidation
+#   Jackett     - Allows Sonarr/Radarr to search torrent trackers
+#   Deluge      - Torrent downloader (uses nginx container as frontend proxy)
+#   VPN         - VPN client to route torrent (deluge) traffic through
+
+version: '3'
+
+
+version: "3.3"
+
+services:
+
+  traefik:
+    image: "traefik:v2.0.0-rc3"
+    container_name: "traefik"
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+
+  whoami:
+    image: "containous/whoami"
+    container_name: "simple-service"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whoami.rule=Host(`whoami.nordyke.xyz`)"
+      - "traefik.http.routers.whoami.entrypoints=web"
+
+      
+    
+  emby:
+    image: linuxserver/emby
+    container_name: emby
+    environment:
+          - PUID=1000
+          - PGID=1000
+          - TZ=America/Chicago
+    volumes:
+          - /home/hunter/docker/media/@data/emby/config:/config
+          - /home/hunter/docker/media/@data/Media/TV:/data/tvshows
+          - /home/hunter/docker/media/@data/Media/Movies:/data/movies
+    ports:
+          - 8096:8096
+    labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.emby.rule=Host(`emby.nordyke.xyz`)"
+        - "traefik.http.routers.emby.entrypoints=web"
+        - "traefik.http.services.emby.loadbalancer.server.port=8096"
+
+# Searchers
+
+  sonarr:
+    image: linuxserver/sonarr:latest
+    container_name: sonarr
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /home/hunter/docker/media/@data/sonarr/config:/config
+      - /home/hunter/docker/media/@data/Media/TV:/tv
+      - /home/hunter/docker/media/@data/nzbget/downloads:/downloads
+    environment: 
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Chicago
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr.rule=Host(`sonarr.nordyke.xyz`)"
+      - "traefik.http.routers.sonarr.entrypoints=web"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+    expose:
+      - 8989
+    restart: always
+
+  radarr:
+    image: linuxserver/radarr:latest
+    container_name: radarr
+    volumes:
+      - /home/hunter/docker/media/@data/radarr/config:/config
+      - /home/hunter/docker/media/@data/Media/Movies:/movies
+      - /home/hunter/docker/media/@data/nzbget/downloads:/downloads
+      - /etc/localtime:/etc/localtime:ro
+    environment: 
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Chicago
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.radarr.rule=Host(`radarr.nordyke.xyz`)"
+      - "traefik.http.routers.radarr.entrypoints=web"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
+    expose:
+      - 7878
+    restart: always
+  jackett:
+        image: linuxserver/jackett:latest
+        container_name: jackett
+        volumes:
+            - /home/hunter/docker/media/@data/jackett/config:/config
+            - /home/hunter/docker/media/@data/jackett/downloads:/downloads
+            - /etc/localtime:/etc/localtime:ro
+        environment:
+            - PUID=1000
+            - PGID=1000
+            - TZ=America/Chicago
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.jackett.rule=Host(`jackett.nordyke.xyz`)"
+            - "traefik.http.routers.jackett.entrypoints=web"
+            - "traefik.http.services.jackett.loadbalancer.server.port=9117"
+        expose:
+            - 9117
+        restart: always
+
+# Downloaders
+
+  deluge:
+    image: linuxserver/deluge:latest
+    container_name: deluge
+    volumes:
+        - /home/hunter/docker/media/@data/deluge/downloads:/downloads
+        - /home/hunter/docker/media/@data/deluge/config:/config
+    environment: 
+        - PUID=1000
+        - PGID=1000
+        - TZ=America/Chicago
+    labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.deluge.rule=Host(`deluge.nordyke.xyz`)"
+        - "traefik.http.routers.deluge.entrypoints=web"
+        - "traefik.http.services.deluge.loadbalancer.server.port=8112"
+    stdin_open: true
+    tty: true
+    restart: always
+    ports:
+
+    - 8112:8112
+
+    
+  vpnclient: # route deluge through vpn
+            image: dperson/openvpn-client
+            # https://github.com/dperson/openvpn-client
+            container_name: vpnclient
+            # cap_add, security_opt, and volume required for the image to function
+            cap_add:
+                - net_admin
+            security_opt:
+                - label:disable
+            volumes:
+                - /dev/net:/dev/net:z
+                - /mnt/media/@data/vpnclient/ovpn:/vpn
+                - /mnt/media/@data/vpnclient/credentials:/etc/openvpn/credentials
+            environment:
+                TZ: America/New_York
+            dns:
+                - 8.8.8.8
+                - 8.8.4.4
+            read_only: true
+            tmpfs:
+                - /tmp
+            restart: always
+            stdin_open: true
+            tty: true
+# Indexers
+
+  ombi:
+        image: linuxserver/ombi:latest
+        container_name: ombi
+        volumes:
+            - /home/hunter/docker/media/@data/ombi/config:/config
+        environment: 
+            - PUID=1000
+            - PGID=1000
+            - TZ=America/Chicago
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.ombi.rule=Host(`ombi.nordyke.xyz`)"
+            - "traefik.http.routers.ombi.entrypoints=web"
+            - "traefik.http.services.ombi.loadbalancer.server.port=3579"
+        expose:
+            - 3579
+        restart: always
+
+
